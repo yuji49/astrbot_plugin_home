@@ -1,4 +1,3 @@
-```python
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
@@ -13,4 +12,3 @@ class HomePlugin(Star):
     @filter.command("hometest")
     async def home_test(self, event: AstrMessageEvent):
         yield event.plain_result("报告沈太太，Home 插件运行正常！随时准备接收监控数据。")
-```
