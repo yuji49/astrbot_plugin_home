@@ -1,7 +1,7 @@
 from astrbot.api.all import *
 from fastapi import Request
 
-@register("astrbot_plugin_home", "yuji", "萧舸的专属监控雷达", "1.0.0")
+@register("astrbot_plugin_home", "yuji", "萧舸的专属监控雷达", "0.0.5")
 class HomePlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
