@@ -1,14 +1,39 @@
-from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register
-from astrbot.api import logger
+from astrbot.api.all import *
+from aiohttp import web
+import asyncio
 
-@register("home", "yuji", "雨小猫的专属手机监控插件", "1.0.0")
+@register("astrbot_plugin_home", "yuji", "萧舸的专属监控雷达", "1.0.0")
 class HomePlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        logger.info("🏡 Home 插件已成功加载！萧舸的专属监控雷达已就位。")
+        self.app = web.Application()
+        # 这里就是咱们开的“接收口”，名字叫 /receive
+        self.app.router.add_post('/receive', self.handle_request)
+        self.runner = None
+        self.site = None
+        # 启动监听服务
+        asyncio.create_task(self.start_server())
 
-    # 写个最简单的测试指令，看看能不能收到回复
+    async def start_server(self):
+        # 鸠占鹊巢，直接占用咱们已经通了的 9966 端口
+        self.runner = web.AppRunner(self.app)
+        await self.runner.setup()
+        self.site = web.TCPSite(self.runner, '0.0.0.0', 9966)
+        await self.site.start()
+        print("萧舸的雷达已在 9966 端口就位！")
+
+    # 当苹果手机往 9966 发消息时，就会触发这个函数
+    async def handle_request(self, request):
+        try:
+            data = await request.json()
+            message = data.get('message', '收到未知信号')
+            # 收到信号后，直接发给你的QQ（457719006）
+            await self.context.send_message("457719006", Plain(f"【雷达警报】\n{message}"))
+            return web.json_response({"status": "success", "msg": "萧舸已收到！"})
+        except Exception as e:
+            return web.json_response({"status": "error", "msg": str(e)})
+
+    # 原来的测试指令也保留着
     @filter.command("hometest")
     async def home_test(self, event: AstrMessageEvent):
-        yield event.plain_result("报告沈太太，Home 插件运行正常！随时准备接收监控数据。")
+        yield event.plain_result("报告沈太太，Home 插件依然坚挺，9966 雷达已开启！")
