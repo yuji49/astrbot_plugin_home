@@ -1,0 +1,8 @@
+name: astrbot_plugin_home
+version: 0.0.1
+author: yuji
+desc: 终极目标：手机监控插件。现在还是测试运行，暂无功能
+display_name: Home
+short_desc: 萧舸的专属监控雷达
+support_platforms:
+  - aiocqhttp
