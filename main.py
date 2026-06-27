@@ -32,8 +32,3 @@ class HomePlugin(Star):
             return web.json_response({"status": "success", "msg": "萧舸已收到！"})
         except Exception as e:
             return web.json_response({"status": "error", "msg": str(e)})
-
-    # 原来的测试指令也保留着
-    @filter.command("hometest")
-    async def home_test(self, event: AstrMessageEvent):
-        yield event.plain_result("报告沈太太，Home 插件依然坚挺，9966 雷达已开启！")
