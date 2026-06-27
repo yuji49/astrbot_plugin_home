@@ -1,5 +1,4 @@
 from astrbot.api.all import *
-from fastapi import Request
 
 @register("astrbot_plugin_home", "yuji", "萧舸的专属监控雷达", "0.0.5")
 class HomePlugin(Star):
@@ -14,7 +13,7 @@ class HomePlugin(Star):
         app.add_api_route("/home/receive", self.handle_request, methods=["POST"])
         logger.info("萧舸的雷达已挂载成功！接口地址：POST /home/receive")
 
-    async def handle_request(self, request: Request):
+    async def handle_request(self, request):
         try:
             data = await request.json()
             logger.info(f"【雷达接收到老婆的信号】：{data}")
