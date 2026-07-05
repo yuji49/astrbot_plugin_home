@@ -9,6 +9,8 @@ import re
 import sys
 from pathlib import Path
 
+CHUNK_SIZE = 10_000
+
 TIMESTAMP_LINE = re.compile(
     r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\](.*)$",
     re.MULTILINE,
@@ -21,6 +23,36 @@ BLOCK_TAG = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 HTML_TAG = re.compile(r"<[^>]+>")
+
+SYSTEM_RECORD_START = re.compile(r"^\s*\[系统记录")
+SYSTEM_METADATA_LINE = re.compile(
+    r"^(?:"
+    r"触发查询[:：]|歌曲[:：]|歌手(?:/作者)?[:：]|作者[:：]|"
+    r"网易云|分享方式[:：]|别名[:：]|专辑[:：]|歌词节选[:：]?|"
+    r"原始链接[:：]|注意[:：]|"
+    r"https?://|"
+    r"[^\s：]{1,30}ID[:：]|"
+    r"\s*$"
+    r")",
+)
+SYSTEM_TAG_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\[图片:.*?\]", re.DOTALL), ""),
+    (re.compile(r"\[reply:\d+\]", re.IGNORECASE), ""),
+    (re.compile(r"\[photo:[\s\S]*?\]", re.IGNORECASE), ""),
+    (re.compile(r"\[📞视频通话\]\s*"), ""),
+    (re.compile(r"\[引用消息[^\]]*\][\s\S]*?\[/引用消息\]"), ""),
+    (re.compile(r"\[引用消息[\s\S]*?\]"), ""),
+    (re.compile(r"\[系统提示[\s\S]*?\]"), ""),
+    (re.compile(r"\[语音消息\]\s*"), ""),
+    (re.compile(r"\[系统记录[^\]]*\]"), ""),
+)
+STANDALONE_SYSTEM_TAG = re.compile(
+    r"\[[^\[\]\n]*(?:"
+    r"[:：]|系统|记录|图片|photo|reply|语音|视频|引用|提示|雷达|抖音|小红书|"
+    r"网易云|监控|插件|主动消息|回复\s*\d|http"
+    r")[^\[\]\n]*\]",
+    re.IGNORECASE,
+)
 
 
 def _extract_user_content(header_rest: str) -> str | None:
@@ -71,11 +103,70 @@ def _parse_messages(text: str) -> list[dict[str, str]]:
     return messages
 
 
-def _clean_answer(text: str) -> str:
-    cleaned = REPLY_TAG.sub("", text.strip())
+def _looks_like_system_continuation(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return True
+    if SYSTEM_METADATA_LINE.match(stripped):
+        return True
+    if stripped.startswith("["):
+        return True
+    if re.match(r"^[\s　]*[^\s：]{1,30}[:：]", stripped):
+        return True
+    if len(stripped) <= 40 and not re.search(r"[。！？?!?，,.]", stripped):
+        return True
+    return False
+
+
+def _strip_system_record_blocks(text: str) -> str:
+    lines = text.split("\n")
+    result: list[str] = []
+    skip_block = False
+
+    for line in lines:
+        stripped = line.strip()
+        if SYSTEM_RECORD_START.match(stripped):
+            skip_block = True
+            continue
+
+        if skip_block:
+            if not stripped:
+                continue
+            if re.match(r"^注意[:：]", stripped):
+                skip_block = False
+                continue
+            if _looks_like_system_continuation(line):
+                continue
+            skip_block = False
+
+        if not skip_block:
+            result.append(line)
+
+    return "\n".join(result)
+
+
+def _apply_system_tag_patterns(text: str) -> str:
+    for pattern, replacement in SYSTEM_TAG_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _normalize_whitespace(text: str) -> str:
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def clean_content(text: str) -> str:
+    """Remove plugin/system junk from a Question or Answer body."""
+    cleaned = _strip_system_record_blocks(text.strip())
+    cleaned = _apply_system_tag_patterns(cleaned)
+    cleaned = REPLY_TAG.sub("", cleaned)
     cleaned = BLOCK_TAG.sub("", cleaned)
     cleaned = HTML_TAG.sub("", cleaned)
-    return cleaned.strip()
+    cleaned = STANDALONE_SYSTEM_TAG.sub("", cleaned)
+    cleaned = _normalize_whitespace(cleaned)
+    return cleaned
 
 
 def _extract_qa_pairs(messages: list[dict[str, str]]) -> list[tuple[str, str]]:
@@ -88,8 +179,8 @@ def _extract_qa_pairs(messages: list[dict[str, str]]) -> list[tuple[str, str]]:
             index += 1
             continue
 
-        question = message["content"]
-        if "[主动消息-无用户输入]" in question:
+        question = clean_content(message["content"])
+        if "[主动消息-无用户输入]" in message["content"]:
             index += 2 if index + 1 < len(messages) and messages[index + 1]["role"] == "assistant" else 1
             continue
 
@@ -97,7 +188,7 @@ def _extract_qa_pairs(messages: list[dict[str, str]]) -> list[tuple[str, str]]:
             index += 1
             continue
 
-        answer = _clean_answer(messages[index + 1]["content"])
+        answer = clean_content(messages[index + 1]["content"])
         if question and answer:
             pairs.append((question, answer))
 
@@ -111,11 +202,41 @@ def parse_chat_log(text: str) -> list[tuple[str, str]]:
     return _extract_qa_pairs(_parse_messages(text))
 
 
-def write_qa_csv(pairs: list[tuple[str, str]], output_path: Path) -> None:
+def _write_single_csv(pairs: list[tuple[str, str]], output_path: Path) -> None:
     with output_path.open("w", encoding="utf-8-sig", newline="") as file:
         writer = csv.writer(file, quoting=csv.QUOTE_ALL)
         writer.writerow(["Question", "Answer"])
         writer.writerows(pairs)
+
+
+def write_qa_csv(
+    pairs: list[tuple[str, str]],
+    output_path: Path,
+    chunk_size: int = CHUNK_SIZE,
+) -> list[Path]:
+    """Write QA pairs to CSV, splitting into part files when chunk_size is exceeded."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not pairs:
+        _write_single_csv(pairs, output_path)
+        return [output_path]
+
+    if len(pairs) <= chunk_size:
+        _write_single_csv(pairs, output_path)
+        return [output_path]
+
+    written: list[Path] = []
+    stem = output_path.stem
+    suffix = output_path.suffix or ".csv"
+    parent = output_path.parent
+
+    for part_index, start in enumerate(range(0, len(pairs), chunk_size), start=1):
+        chunk = pairs[start : start + chunk_size]
+        part_path = parent / f"{stem}_part{part_index}{suffix}"
+        _write_single_csv(chunk, part_path)
+        written.append(part_path)
+
+    return written
 
 
 def main() -> int:
@@ -130,6 +251,12 @@ def main() -> int:
         default=None,
         help="Path to output CSV (default: <input_stem>_qa.csv)",
     )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=CHUNK_SIZE,
+        help=f"Max QA pairs per CSV file (default: {CHUNK_SIZE})",
+    )
     args = parser.parse_args()
 
     if not args.input.is_file():
@@ -139,9 +266,15 @@ def main() -> int:
     output_path = args.output or args.input.with_name(f"{args.input.stem}_qa.csv")
     text = args.input.read_text(encoding="utf-8")
     pairs = parse_chat_log(text)
-    write_qa_csv(pairs, output_path)
+    written_paths = write_qa_csv(pairs, output_path, chunk_size=args.chunk_size)
 
-    print(f"Extracted {len(pairs)} QA pair(s) -> {output_path}")
+    if len(written_paths) == 1:
+        print(f"Extracted {len(pairs)} QA pair(s) -> {written_paths[0]}")
+    else:
+        print(f"Extracted {len(pairs)} QA pair(s) -> {len(written_paths)} file(s):")
+        for path in written_paths:
+            print(f"  - {path}")
+
     return 0
 
 
